@@ -1,46 +1,86 @@
-# main.py — Прокси к Telegram Bot API для Render
-import os
-from flask import Flask, request, Response, jsonify
-import requests
+// main.py — Универсальный прокси к Telegram Bot API для Render
+import { Context, Hono } from 'hono'
+import { cors } from 'hono/cors'
 
-app = Flask(__name__)
+const app = new Hono()
+const TELEGRAM_API = "https://api.telegram.org"
 
-TELEGRAM_API = "https://api.telegram.org"
+// Middleware: CORS для отладки
+app.use('*', cors())
 
-@app.route('/bot<token>/<method>', methods=['POST'])
-def proxy(token, method):
-    """Проксирует POST-запросы к Telegram API"""
-    try:
-        url = f"{TELEGRAM_API}/bot{token}/{method}"
-        
-        # Копируем заголовки (кроме hop-by-hop)
-        headers = {
-            key: value for key, value in request.headers
-            if key.lower() not in ['host', 'connection']
-        }
-        headers['Host'] = 'api.telegram.org'
-        
-        # Отправляем запрос к Telegram
-        resp = requests.post(
-            url,
-            headers=headers,
-            data=request.get_data(),
-            timeout=30
-        )
-        
-        # Возвращаем ответ
-        return Response(
-            resp.content,
-            status=resp.status_code,
-            content_type='application/json'
-        )
-    except Exception as e:
-        return jsonify({'error': str(e)}), 502
+// Универсальный обработчик: поддерживает оба формата путей
+app.all('/bot:token/:method{.*}', async (c) => {
+  const { token, method } = c.req.param()
+  // token уже включает и ID, и секрет (через :), т.к. путь /bot8403731624:AAA.../getMe
+  
+  const targetUrl = `${TELEGRAM_API}/bot${token}/${method}`
+  
+  try {
+    // Копируем заголовки и тело запроса
+    const headers = new Headers(c.req.raw.headers)
+    headers.set('Host', 'api.telegram.org')
+    
+    const body = await c.req.raw.clone().text()
+    
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: headers,
+      body: c.req.method !== 'GET' ? body : undefined,
+    })
+    
+    // Возвращаем ответ от Telegram
+    const responseText = await response.text()
+    return new Response(responseText, {
+      status: response.status,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (error) {
+    return c.json({ error: error.message }, 502)
+  }
+})
 
-@app.route('/health')
-def health():
-    return jsonify({'status': 'ok'}), 200
+// Резервный обработчик для формата aiogram: /<method> с токеном в заголовке или теле
+app.all('/:method{.*}', async (c) => {
+  const method = c.req.param('method')
+  const token = c.req.header('X-Bot-Token') // Опционально: токен в заголовке
+  
+  if (!token) {
+    return c.json({ error: 'Bot token required in X-Bot-Token header or URL path' }, 400)
+  }
+  
+  const targetUrl = `${TELEGRAM_API}/bot${token}/${method}`
+  
+  try {
+    const headers = new Headers(c.req.raw.headers)
+    headers.set('Host', 'api.telegram.org')
+    headers.delete('X-Bot-Token') // Удаляем наш кастомный заголовок
+    
+    const body = await c.req.raw.clone().text()
+    
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: headers,
+      body: c.req.method !== 'GET' ? body : undefined,
+    })
+    
+    const responseText = await response.text()
+    return new Response(responseText, {
+      status: response.status,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (error) {
+    return c.json({ error: error.message }, 502)
+  }
+})
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+// Health check
+app.get('/health', (c) => c.json({ status: 'ok' }))
+app.head('/health', (c) => new Response(null, { status: 200 }))
+
+export default app
