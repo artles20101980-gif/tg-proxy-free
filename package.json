@@ -1,0 +1,11 @@
+{
+  "name": "tg-proxy-free",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "hono": "^4.0.0"
+  }
+}
